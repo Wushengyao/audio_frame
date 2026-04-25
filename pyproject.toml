@@ -47,7 +47,9 @@ dependencies = [
     "funasr",
     "spaces",
     "argbind",
-    "safetensors"
+    "safetensors",
+    "fastapi>=0.116.0",
+    "uvicorn[standard]>=0.32.0"
 
 ]
 
@@ -62,6 +64,7 @@ dev = [
 
 [project.scripts]
 voxcpm = "voxcpm.cli:main"
+voxcpm-api = "voxcpm.http_api:main"
 
 [project.urls]
 Homepage = "https://github.com/OpenBMB/VoxCPM"
