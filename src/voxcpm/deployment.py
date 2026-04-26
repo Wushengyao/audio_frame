@@ -10,7 +10,8 @@ import torch
 
 
 DEFAULT_MIN_SYSTEM_MEMORY_GB = 4.0
-DEFAULT_MIN_CUDA_MEMORY_GB = 4.0
+DEFAULT_MIN_CUDA_MEMORY_GB = 16.0
+DEFAULT_CUDA_IDLE_USED_MEMORY_GB = 2.0
 
 
 def _utc_now() -> str:
@@ -76,8 +77,20 @@ class CudaDeviceStatus:
     sufficient: bool
 
     @property
+    def used_bytes(self) -> int:
+        return max(self.total_bytes - self.free_bytes, 0)
+
+    @property
     def free_gb(self) -> float:
         return round(self.free_bytes / 1024**3, 2)
+
+    @property
+    def used_gb(self) -> float:
+        return round(self.used_bytes / 1024**3, 2)
+
+    @property
+    def used_ratio(self) -> float:
+        return self.used_bytes / self.total_bytes if self.total_bytes else 1.0
 
 
 @dataclass(frozen=True)
@@ -101,6 +114,16 @@ class DeploymentPlan:
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
+        data["cuda_devices"] = tuple(
+            {
+                **asdict(device),
+                "used_bytes": device.used_bytes,
+                "free_gb": device.free_gb,
+                "used_gb": device.used_gb,
+                "used_ratio": round(device.used_ratio, 4),
+            }
+            for device in self.cuda_devices
+        )
         data["model_device"] = self.model_device
         return data
 
@@ -157,6 +180,21 @@ def probe_cuda_devices(min_cuda_memory_gb: float | None = None) -> tuple[CudaDev
     return tuple(devices)
 
 
+def _choose_cuda_device(cuda_devices: tuple[CudaDeviceStatus, ...]) -> CudaDeviceStatus | None:
+    candidates = [device for device in cuda_devices if device.sufficient]
+    if not candidates:
+        return None
+
+    idle_used_limit = _bytes_from_gb(_float_env("AUDIO_FRAME_CUDA_IDLE_USED_MEMORY_GB", DEFAULT_CUDA_IDLE_USED_MEMORY_GB))
+    prefer_idle = _bool_env("AUDIO_FRAME_PREFER_IDLE_CUDA", True)
+    if prefer_idle:
+        idle_candidates = [device for device in candidates if device.used_bytes <= idle_used_limit]
+        if idle_candidates:
+            return min(idle_candidates, key=lambda device: (device.total_bytes, -device.free_bytes, device.index))
+
+    return max(candidates, key=lambda device: (device.free_bytes, -device.used_ratio, -device.index))
+
+
 def build_deployment_plan(
     *,
     requested_device: str | None = None,
@@ -196,19 +234,20 @@ def build_deployment_plan(
                     "falling back to CPU."
                 )
     elif requested == "auto":
-        best_cuda = max(cuda_devices, key=lambda device: device.free_bytes, default=None)
+        best_cuda = _choose_cuda_device(cuda_devices)
         if best_cuda and best_cuda.sufficient:
             selected_device = "cuda"
             cuda_index = best_cuda.index
-        elif best_cuda:
+        elif cuda_devices:
+            best_observed = max(cuda_devices, key=lambda device: device.free_bytes)
             warnings.append(
-                f"Best CUDA device has {best_cuda.free_gb} GiB free, below the configured minimum; using CPU."
+                f"Best CUDA device has {best_observed.free_gb} GiB free, below the configured minimum; using CPU."
             )
     elif requested == "cpu":
         selected_device = "cpu"
     else:
         warnings.append(f"Unsupported requested device '{requested}'; using auto deployment.")
-        best_cuda = max(cuda_devices, key=lambda device: device.free_bytes, default=None)
+        best_cuda = _choose_cuda_device(cuda_devices)
         if best_cuda and best_cuda.sufficient:
             selected_device = "cuda"
             cuda_index = best_cuda.index
@@ -222,7 +261,14 @@ def build_deployment_plan(
     if strict_mode and not system_memory.sufficient:
         reason = "Insufficient system memory for model loading."
     elif selected_device == "cuda":
-        reason = f"Using CUDA device {cuda_index} with sufficient free VRAM."
+        selected_cuda = next((device for device in cuda_devices if device.index == cuda_index), None)
+        if selected_cuda is not None:
+            reason = (
+                f"Using CUDA device {cuda_index} with {selected_cuda.free_gb} GiB free "
+                f"and {selected_cuda.used_gb} GiB already used."
+            )
+        else:
+            reason = f"Using CUDA device {cuda_index} with sufficient free VRAM."
     else:
         reason = "Using CPU deployment."
 

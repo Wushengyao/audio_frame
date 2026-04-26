@@ -193,7 +193,7 @@ def main() -> None:
     parser.add_argument("--port", type=int, default=8808)
     parser.add_argument("--model-id", default="openbmb/VoxCPM2")
     parser.add_argument("--device", default=os.environ.get("AUDIO_FRAME_DEVICE", "auto"))
-    parser.add_argument("--no-optimize", action="store_true")
+    parser.add_argument("--no-optimize", action="store_true", default=_bool_env("AUDIO_FRAME_NO_OPTIMIZE", False))
     args = parser.parse_args()
     state.configure(model_id=args.model_id, device=args.device, optimize=not args.no_optimize)
     logger.info("Audio Frame deployment preflight: %s", state.deployment.to_dict())

@@ -553,7 +553,12 @@ if __name__ == "__main__":
         help="Local path or HuggingFace repo ID (default: openbmb/VoxCPM2)",
     )
     parser.add_argument("--device", type=str, default=os.environ.get("AUDIO_FRAME_DEVICE", "auto"))
-    parser.add_argument("--no-optimize", action="store_true")
+    parser.add_argument(
+        "--no-optimize",
+        action="store_true",
+        default=os.environ.get("AUDIO_FRAME_NO_OPTIMIZE", "").strip().lower()
+        in {"1", "true", "yes", "y", "on"},
+    )
     parser.add_argument("--port", type=int, default=8808, help="Server port")
     args = parser.parse_args()
     run_demo(
