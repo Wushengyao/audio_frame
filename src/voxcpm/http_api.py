@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import io
 import logging
+import os
 import tempfile
 from pathlib import Path
 from threading import Lock
@@ -14,6 +15,13 @@ from pydantic import BaseModel, Field
 
 
 logger = logging.getLogger(__name__)
+
+
+def _bool_env(name: str, default: bool = False) -> bool:
+    value = os.environ.get(name)
+    if value is None or value == "":
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
 class TTSRequest(BaseModel):
@@ -39,7 +47,25 @@ class ModelState:
     def __init__(self) -> None:
         self.model = None
         self.model_id = "openbmb/VoxCPM2"
+        self.requested_device = os.environ.get("AUDIO_FRAME_DEVICE", "auto")
+        self.optimize_requested = not _bool_env("AUDIO_FRAME_NO_OPTIMIZE", False)
+        self.deployment = None
         self.lock = Lock()
+
+    def configure(self, *, model_id: str, device: str, optimize: bool) -> None:
+        self.model_id = model_id
+        self.requested_device = device
+        self.optimize_requested = optimize
+        self.preflight()
+
+    def preflight(self):
+        from .deployment import build_deployment_plan
+
+        self.deployment = build_deployment_plan(
+            requested_device=self.requested_device,
+            optimize_requested=self.optimize_requested,
+        )
+        return self.deployment
 
     def load(self):
         with self.lock:
@@ -47,14 +73,30 @@ class ModelState:
                 return self.model
             try:
                 from .core import VoxCPM
+                from .deployment import apply_deployment_plan
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
                     "VoxCPM runtime dependencies are not installed. "
                     "Run AUDIO_FRAME_FULL_INSTALL=1 ./start_wsl_services.sh or install audio_frame with `uv pip install -e .`."
                 ) from exc
 
-            logger.info("Loading VoxCPM model: %s", self.model_id)
-            self.model = VoxCPM.from_pretrained(self.model_id, optimize=True)
+            deployment = self.preflight()
+            if not deployment.can_load:
+                raise RuntimeError(deployment.reason)
+            for warning in deployment.warnings:
+                logger.warning("Audio Frame deployment warning: %s", warning)
+            apply_deployment_plan(deployment)
+            logger.info(
+                "Loading VoxCPM model: %s on %s (optimize=%s)",
+                self.model_id,
+                deployment.model_device,
+                deployment.optimize,
+            )
+            self.model = VoxCPM.from_pretrained(
+                self.model_id,
+                optimize=deployment.optimize,
+                device=deployment.model_device,
+            )
             logger.info("VoxCPM model loaded.")
             return self.model
 
@@ -65,10 +107,12 @@ app = FastAPI(title="VoxCPM Audio Frame API")
 
 @app.get("/healthz")
 def healthz():
+    deployment = state.deployment or state.preflight()
     return {
         "status": "ok",
         "model_id": state.model_id,
         "model_loaded": state.model is not None,
+        "deployment": deployment.to_dict(),
     }
 
 
@@ -148,8 +192,11 @@ def main() -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8808)
     parser.add_argument("--model-id", default="openbmb/VoxCPM2")
+    parser.add_argument("--device", default=os.environ.get("AUDIO_FRAME_DEVICE", "auto"))
+    parser.add_argument("--no-optimize", action="store_true")
     args = parser.parse_args()
-    state.model_id = args.model_id
+    state.configure(model_id=args.model_id, device=args.device, optimize=not args.no_optimize)
+    logger.info("Audio Frame deployment preflight: %s", state.deployment.to_dict())
     uvicorn.run(app, host=args.host, port=args.port)
 
 

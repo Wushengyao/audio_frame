@@ -2,15 +2,14 @@ import os
 import sys
 import logging
 import numpy as np
-import torch
 import gradio as gr
-from typing import Optional, Tuple
-from funasr import AutoModel
+from typing import Any, Optional, Tuple
 from pathlib import Path
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
 
 import voxcpm
+from voxcpm.deployment import apply_deployment_plan, build_deployment_plan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -219,33 +218,81 @@ _APP_THEME = gr.themes.Soft(
 # ---------- Model ----------
 
 class VoxCPMDemo:
-    def __init__(self, model_id: str = "openbmb/VoxCPM2") -> None:
-        self.device = "cuda" if torch.cuda.is_available() else "cpu"
+    def __init__(
+        self,
+        model_id: str = "openbmb/VoxCPM2",
+        *,
+        device: str = "auto",
+        optimize: bool = True,
+    ) -> None:
+        self.requested_device = device
+        self.optimize_requested = optimize
+        self.deployment = build_deployment_plan(
+            requested_device=self.requested_device,
+            optimize_requested=self.optimize_requested,
+        )
+        self.device = self.deployment.model_device
+        for warning in self.deployment.warnings:
+            logger.warning("Audio Frame deployment warning: %s", warning)
+        logger.info("Audio Frame deployment preflight: %s", self.deployment.to_dict())
         logger.info(f"Running on device: {self.device}")
 
         self.asr_model_id = "iic/SenseVoiceSmall"
-        self.asr_model: Optional[AutoModel] = AutoModel(
+        self.asr_model: Optional[Any] = None
+
+        self.voxcpm_model: Optional[Any] = None
+        self._model_id = model_id
+
+    def get_or_load_asr(self) -> Any:
+        if self.asr_model is not None:
+            return self.asr_model
+        from funasr import AutoModel
+
+        logger.info(f"Loading ASR model: {self.asr_model_id}")
+        asr_device = "cpu"
+        if self.device == "cuda":
+            cuda_index = self.deployment.cuda_device_index if self.deployment.cuda_device_index is not None else 0
+            asr_device = f"cuda:{cuda_index}"
+        self.asr_model = AutoModel(
             model=self.asr_model_id,
             disable_update=True,
             log_level="DEBUG",
-            device="cuda:0" if self.device == "cuda" else "cpu",
+            device=asr_device,
         )
+        logger.info("ASR model loaded successfully.")
+        return self.asr_model
 
-        self.voxcpm_model: Optional[voxcpm.VoxCPM] = None
-        self._model_id = model_id
-
-    def get_or_load_voxcpm(self) -> voxcpm.VoxCPM:
+    def get_or_load_voxcpm(self) -> Any:
         if self.voxcpm_model is not None:
             return self.voxcpm_model
-        logger.info(f"Loading model: {self._model_id}")
-        self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(self._model_id, optimize=True)
+        self.deployment = build_deployment_plan(
+            requested_device=self.requested_device,
+            optimize_requested=self.optimize_requested,
+        )
+        self.device = self.deployment.model_device
+        if not self.deployment.can_load:
+            raise RuntimeError(self.deployment.reason)
+        for warning in self.deployment.warnings:
+            logger.warning("Audio Frame deployment warning: %s", warning)
+        apply_deployment_plan(self.deployment)
+        logger.info(
+            "Loading model: %s on %s (optimize=%s)",
+            self._model_id,
+            self.deployment.model_device,
+            self.deployment.optimize,
+        )
+        self.voxcpm_model = voxcpm.VoxCPM.from_pretrained(
+            self._model_id,
+            optimize=self.deployment.optimize,
+            device=self.deployment.model_device,
+        )
         logger.info("Model loaded successfully.")
         return self.voxcpm_model
 
     def prompt_wav_recognition(self, prompt_wav: Optional[str]) -> str:
         if prompt_wav is None:
             return ""
-        res = self.asr_model.generate(input=prompt_wav, language="auto", use_itn=True)
+        res = self.get_or_load_asr().generate(input=prompt_wav, language="auto", use_itn=True)
         return res[0]["text"].split("|>")[-1]
 
     def _build_generate_kwargs(
@@ -483,8 +530,10 @@ def run_demo(
     server_port: int = 8808,
     show_error: bool = True,
     model_id: str = "openbmb/VoxCPM2",
+    device: str = "auto",
+    optimize: bool = True,
 ):
-    demo = VoxCPMDemo(model_id=model_id)
+    demo = VoxCPMDemo(model_id=model_id, device=device, optimize=optimize)
     interface = create_demo_interface(demo)
     interface.queue(max_size=10, default_concurrency_limit=1).launch(
         server_name=server_name,
@@ -503,6 +552,13 @@ if __name__ == "__main__":
         "--model-id", type=str, default="openbmb/VoxCPM2",
         help="Local path or HuggingFace repo ID (default: openbmb/VoxCPM2)",
     )
+    parser.add_argument("--device", type=str, default=os.environ.get("AUDIO_FRAME_DEVICE", "auto"))
+    parser.add_argument("--no-optimize", action="store_true")
     parser.add_argument("--port", type=int, default=8808, help="Server port")
     args = parser.parse_args()
-    run_demo(model_id=args.model_id, server_port=args.port)
+    run_demo(
+        model_id=args.model_id,
+        server_port=args.port,
+        device=args.device,
+        optimize=not args.no_optimize,
+    )
