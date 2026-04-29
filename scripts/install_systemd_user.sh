@@ -6,6 +6,8 @@ SYSTEMD_DIR="${AUDIO_FRAME_SYSTEMD_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/system
 SERVICE_PREFIX="${AUDIO_FRAME_SERVICE_PREFIX:-audio-frame}"
 BASE_PORT="${AUDIO_FRAME_BASE_PORT:-8808}"
 GPU_WORKERS_PER_GPU="${AUDIO_FRAME_GPU_WORKERS_PER_GPU:-2}"
+GPU_NO_OPTIMIZE="${AUDIO_FRAME_GPU_NO_OPTIMIZE:-1}"
+GPU_MIN_CUDA_MEMORY_GB="${AUDIO_FRAME_GPU_MIN_CUDA_MEMORY_GB:-8}"
 CPU_PORT="${AUDIO_FRAME_CPU_PORT:-8812}"
 CPU_WORKERS="${AUDIO_FRAME_CPU_WORKERS:-4}"
 CPU_THREADS="${AUDIO_FRAME_CPU_THREADS:-7}"
@@ -19,6 +21,8 @@ Usage: $(basename "$0") [--enable-now] [--no-cpu]
 Environment:
   AUDIO_FRAME_GPU_IDS              Space-separated physical GPU ids. Auto-detected with nvidia-smi when unset.
   AUDIO_FRAME_GPU_WORKERS_PER_GPU  GPU workers per physical GPU. Default: 2.
+  AUDIO_FRAME_GPU_NO_OPTIMIZE      Disable torch.compile for GPU workers. Default: 1.
+  AUDIO_FRAME_GPU_MIN_CUDA_MEMORY_GB  Minimum free VRAM gate for each GPU worker. Default: 8.
   AUDIO_FRAME_BASE_PORT            First GPU worker port. Default: 8808.
   AUDIO_FRAME_CPU_PORT             CPU fallback port. Default: 8812.
   AUDIO_FRAME_CPU_WORKERS          Uvicorn workers for CPU fallback. Default: 4.
@@ -70,6 +74,7 @@ write_unit() {
   local preload="$6"
   local no_optimize="$7"
   local torch_threads="${8:-}"
+  local min_cuda_memory_gb="${9:-}"
   local unit_path="$SYSTEMD_DIR/$name"
 
   {
@@ -95,6 +100,9 @@ Environment=AUDIO_FRAME_LOAD_DENOISER=0
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=CUDA_VISIBLE_DEVICES=${cuda_visible_devices}
 EOF
+    if [[ -n "$min_cuda_memory_gb" ]]; then
+      echo "Environment=AUDIO_FRAME_MIN_CUDA_MEMORY_GB=${min_cuda_memory_gb}"
+    fi
     if [[ -n "${AUDIO_FRAME_PYTHON:-}" ]]; then
       echo "Environment=AUDIO_FRAME_PYTHON=${AUDIO_FRAME_PYTHON}"
     fi
@@ -129,7 +137,7 @@ if [[ "${#GPU_IDS[@]}" -gt 0 && -n "${GPU_IDS[0]}" ]]; then
       if [[ "${gpu_id}" == "${GPU_IDS[0]}" && "$slot" -eq 0 ]]; then
         unit="${SERVICE_PREFIX}.service"
       fi
-      write_unit "$unit" "$port" "cuda" "$gpu_id" "1" "1" "0"
+      write_unit "$unit" "$port" "cuda" "$gpu_id" "1" "1" "$GPU_NO_OPTIMIZE" "" "$GPU_MIN_CUDA_MEMORY_GB"
       SERVICE_NAMES+=("$unit")
       PORTS+=("$port")
       port=$((port + 1))

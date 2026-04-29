@@ -86,6 +86,8 @@ Useful installer overrides:
 | --- | --- | --- |
 | `AUDIO_FRAME_GPU_IDS` | auto | Space-separated physical GPU ids, for example `"0 1"` |
 | `AUDIO_FRAME_GPU_WORKERS_PER_GPU` | `2` | GPU API processes per GPU |
+| `AUDIO_FRAME_GPU_NO_OPTIMIZE` | `1` | Disable `torch.compile` for GPU workers; this is the stable default for multi-process serving |
+| `AUDIO_FRAME_GPU_MIN_CUDA_MEMORY_GB` | `8` | Minimum free VRAM gate per worker during preload |
 | `AUDIO_FRAME_BASE_PORT` | `8808` | First GPU worker port |
 | `AUDIO_FRAME_CPU_PORT` | `8812` | CPU fallback port |
 | `AUDIO_FRAME_CPU_WORKERS` | `4` | Uvicorn workers for CPU fallback |
@@ -123,7 +125,8 @@ Environment=AUDIO_FRAME_MODE=api
 Environment=AUDIO_FRAME_DEVICE=cuda
 Environment=AUDIO_FRAME_PRELOAD=1
 Environment=AUDIO_FRAME_WORKERS=1
-Environment=AUDIO_FRAME_NO_OPTIMIZE=0
+Environment=AUDIO_FRAME_NO_OPTIMIZE=1
+Environment=AUDIO_FRAME_MIN_CUDA_MEMORY_GB=8
 Environment=AUDIO_FRAME_LOAD_DENOISER=0
 Environment=TOKENIZERS_PARALLELISM=false
 Environment=PORT=8808
@@ -277,7 +280,8 @@ only for short-text fill-in.
 | `AUDIO_FRAME_MODEL_ID` | `openbmb/VoxCPM2` | Hugging Face repo or local model path |
 | `AUDIO_FRAME_PRELOAD` | `0` | Load model during API startup |
 | `AUDIO_FRAME_WORKERS` | `1` | Uvicorn workers in API mode |
-| `AUDIO_FRAME_NO_OPTIMIZE` | `0` on GPU, `1` on CPU | Disable `torch.compile` style optimization |
+| `AUDIO_FRAME_NO_OPTIMIZE` | `1` for systemd workers | Disable `torch.compile` style optimization |
+| `AUDIO_FRAME_MIN_CUDA_MEMORY_GB` | `16` globally, `8` in generated GPU units | Minimum free VRAM required before selecting CUDA |
 | `AUDIO_FRAME_LOAD_DENOISER` | `0` | Load denoiser model |
 | `AUDIO_FRAME_TORCH_THREADS` | `7` for CPU mode | Used for `OMP_NUM_THREADS` and `MKL_NUM_THREADS` |
 | `CUDA_VISIBLE_DEVICES` | inherited | Pin one API process to one physical GPU |
