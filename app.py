@@ -535,7 +535,21 @@ def run_demo(
 ):
     demo = VoxCPMDemo(model_id=model_id, device=device, optimize=optimize)
     interface = create_demo_interface(demo)
-    interface.queue(max_size=10, default_concurrency_limit=1).launch(
+    interface = interface.queue(max_size=10, default_concurrency_limit=1)
+
+    from gradio.routes import App
+    health_app = App()
+
+    @health_app.get("/healthz")
+    def healthz():
+        return {
+            "status": "ok",
+            "model_id": model_id,
+            "model_loaded": demo.voxcpm_model is not None,
+        }
+
+    interface.launch(
+        _app=health_app,
         server_name=server_name,
         server_port=server_port,
         show_error=show_error,

@@ -46,7 +46,7 @@ class TTSResponse(BaseModel):
 class ModelState:
     def __init__(self) -> None:
         self.model = None
-        self.model_id = "openbmb/VoxCPM2"
+        self.model_id = os.environ.get("AUDIO_FRAME_MODEL_ID", "openbmb/VoxCPM2")
         self.requested_device = os.environ.get("AUDIO_FRAME_DEVICE", "auto")
         self.optimize_requested = not _bool_env("AUDIO_FRAME_NO_OPTIMIZE", False)
         self.deployment = None
@@ -94,6 +94,7 @@ class ModelState:
             )
             self.model = VoxCPM.from_pretrained(
                 self.model_id,
+                load_denoiser=_bool_env("AUDIO_FRAME_LOAD_DENOISER", False),
                 optimize=deployment.optimize,
                 device=deployment.model_device,
             )
@@ -103,6 +104,15 @@ class ModelState:
 
 state = ModelState()
 app = FastAPI(title="VoxCPM Audio Frame API")
+
+
+@app.on_event("startup")
+def preload_model_if_requested():
+    if not _bool_env("AUDIO_FRAME_PRELOAD", False):
+        state.preflight()
+        return
+    logger.info("AUDIO_FRAME_PRELOAD=1; loading model during startup.")
+    state.load()
 
 
 @app.get("/healthz")
