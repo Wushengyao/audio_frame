@@ -537,10 +537,6 @@ def run_demo(
     interface = create_demo_interface(demo)
     interface = interface.queue(max_size=10, default_concurrency_limit=1)
 
-    from gradio.routes import App
-    health_app = App()
-
-    @health_app.get("/healthz")
     def healthz():
         return {
             "status": "ok",
@@ -548,15 +544,28 @@ def run_demo(
             "model_loaded": demo.voxcpm_model is not None,
         }
 
-    interface.launch(
-        _app=health_app,
-        server_name=server_name,
-        server_port=server_port,
-        show_error=show_error,
-        i18n=I18N,
-        theme=_APP_THEME,
-        css=_CUSTOM_CSS,
-    )
+    launch_kwargs = {
+        "server_name": server_name,
+        "server_port": server_port,
+        "show_error": show_error,
+        "i18n": I18N,
+        "theme": _APP_THEME,
+        "css": _CUSTOM_CSS,
+    }
+
+    import inspect
+
+    if "_app" in inspect.signature(interface.launch).parameters:
+        from gradio.routes import App
+
+        health_app = App()
+        health_app.get("/healthz")(healthz)
+        interface.launch(_app=health_app, **launch_kwargs)
+        return
+
+    app, _, _ = interface.launch(prevent_thread_lock=True, **launch_kwargs)
+    app.get("/healthz")(healthz)
+    interface.block_thread()
 
 
 if __name__ == "__main__":
